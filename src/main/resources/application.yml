@@ -9,3 +9,8 @@ langchain4j:
       chat-model:
         model-name: qwen-max
         api-key: <Your API Key>
+asr:
+  vendor: sherpa-onnx
+  sherpa:
+    base-url: http://localhost:8081
+    endpoint: /v1/asr:transcribe

@@ -1,0 +1,33 @@
+version: "3.9"
+services:
+  sherpa-onnx-server:
+    build:
+      context: .
+      dockerfile: docker/sherpa-onnx/Dockerfile
+    image: maverick/sherpa-onnx:local
+    container_name: sherpa-onnx-server
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - SHERPA_NUM_THREADS=2
+      - SHERPA_PROVIDER=cpu
+      - SHERPA_DECODING=greedy_search
+      - SHERPA_MODEL_DIR=/models
+      - SHERPA_AUTO_DOWNLOAD=true
+      #方式一：GitHub Releases 自动发现（四项都要配）
+      - SHERPA_GH_OWNER=k2-fsa
+      - SHERPA_GH_REPO=sherpa-onnx
+      - SHERPA_GH_TAG=asr-models
+      - SHERPA_GH_ASSET_PREFIX=sherpa-onnx-sense-voice-
+      # 方式二：打包模型压缩包直链（zip/tar.gz/tar.bz2/tgz）
+      # - SHERPA_MODEL_BUNDLE_URL=https://github.com/xxx/yyy/releases/download/tag/asset.tar.bz2
+      # 方式三：分别提供四个URL
+      # - SHERPA_URL_ENCODER=https://.../encoder.onnx
+      # - SHERPA_URL_DECODER=https://.../decoder.onnx
+      # - SHERPA_URL_JOINER=https://.../joiner.onnx
+      # - SHERPA_URL_TOKENS=https://.../tokens.txt
+    volumes:
+      - ./models/sherpa:/models
+
+
