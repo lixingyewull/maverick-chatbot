@@ -9,6 +9,13 @@
     <h2>语音转文字 + LLM</h2>
     <button id="start">开始录音</button>
     <button id="stop" disabled>停止并发送</button>
+    <div style="margin:8px 0;">
+      <label>
+        音量阈值:
+        <input id="rms" type="range" min="0" max="0.1" step="0.001" />
+        <span id="rmsVal"></span>
+      </label>
+    </div>
     <div id="status">空闲</div>
     <audio id="player" controls></audio>
     <pre id="output"></pre>

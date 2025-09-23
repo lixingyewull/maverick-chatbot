@@ -5,6 +5,8 @@ const stopBtn = document.getElementById('stop');
 const statusEl = document.getElementById('status');
 const player = document.getElementById('player');
 const output = document.getElementById('output');
+const rmsSlider = document.getElementById('rms');
+const rmsVal = document.getElementById('rmsVal');
 
 let recorder;
 let ws;
@@ -13,6 +15,7 @@ let vadTimer;
 let speaking = false; // 播放中标志（半双工）
 let silenceMs = 0;
 let hasVoiceSinceLastFlush = false;
+let rmsThreshold = 0.015;
 
 function setStatus(t){ statusEl.textContent = t; }
 
@@ -35,6 +38,16 @@ function detectAudioMime(ab) {
   return 'audio/wav';
 }
 
+function wireRmsUI() {
+  if (!rmsSlider || !rmsVal) return;
+  rmsSlider.value = String(rmsThreshold);
+  rmsVal.textContent = Number(rmsSlider.value).toFixed(3);
+  rmsSlider.addEventListener('input', () => {
+    rmsThreshold = Number(rmsSlider.value);
+    rmsVal.textContent = rmsThreshold.toFixed(3);
+  });
+}
+
 async function startRecordingLoop() {
   recorder = new WavRecorder({ sampleRate: 16000, numChannels: 1 });
   await recorder.start();
@@ -42,7 +55,6 @@ async function startRecordingLoop() {
   silenceMs = 0;
   hasVoiceSinceLastFlush = false;
   // VAD: 简单 RMS 阈值
-  const rmsThreshold = 0.015; // 可按设备调节
   const minVoiceMs = 150;     // 至少达到这段有声再认为有声
   const minSilenceMs = 600;   // 静音超过该值触发切片
   let voiceAccumMs = 0;
@@ -153,5 +165,6 @@ stopBtn?.addEventListener('click', async () => {
 
 // 页面加载即建立 WS 连接
 connectWS();
+wireRmsUI();
 
 

@@ -1,11 +1,12 @@
 package com.maverick.maverickchatbot.web;
 
-import com.maverick.maverickchatbot.ai.AiCodeHelper;
+import com.maverick.maverickchatbot.ai.AiCodeHelperService;
 import com.maverick.maverickchatbot.ai.asr.SpeechToTextService;
 import com.maverick.maverickchatbot.ai.tts.TtsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -13,15 +14,21 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.AbstractWebSocketHandler;
 import org.springframework.web.multipart.MultipartFile;
 import java.nio.ByteBuffer;
+import dev.langchain4j.service.Result;
+import dev.langchain4j.rag.content.Content;
+import java.util.List;
 
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class VoiceWebSocketHandler extends AbstractWebSocketHandler {
 
-    private final AiCodeHelper aiCodeHelper;
+    private final AiCodeHelperService aiCodeHelperService;
     private final SpeechToTextService speechToTextService;
     private final TtsService ttsService;
+
+    @Value("${llm.max-output-chars:100}")
+    private int maxOutputChars;
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
@@ -46,8 +53,25 @@ public class VoiceWebSocketHandler extends AbstractWebSocketHandler {
             payload.get(audioBytes);
             MultipartFile file = new ByteArrayMultipartFile("file", "client.wav", "audio/wav", audioBytes);
             String asrText = speechToTextService.transcribe(file);
-            String aiText = aiCodeHelper.chat(asrText);
-            byte[] tts = ttsService.synthesize(aiText, null);
+            log.info("用户语音输入" + asrText);
+            // 直接使用 AiCodeHelperService（内置 RAG）
+            Result<String> result = aiCodeHelperService.chatWithRag(asrText);
+            List<Content> sources = (result != null) ? result.sources() : null;
+            if (sources == null || sources.isEmpty()) {
+                log.info("RAG 无检索结果，跳过回复");
+                try { session.sendMessage(new TextMessage("no_answer")); } catch (Exception ignored) {}
+                return;
+            }
+            String aiText = result.content();
+            if (aiText == null || aiText.isEmpty()) {
+                try { session.sendMessage(new TextMessage("no_answer")); } catch (Exception ignored) {}
+                return;
+            }
+            if (aiText.length() > maxOutputChars) {
+                aiText = aiText.substring(0, Math.max(0, maxOutputChars));
+            }
+            log.info("AI 输出：" + aiText);
+            byte[] tts = ttsService.synthesize(aiText,"zh-CN-XiaoxiaoNeural");
             session.sendMessage(new BinaryMessage(tts));
         } catch (Exception e) {
             log.error("WS handleBinaryMessage failed", e);
