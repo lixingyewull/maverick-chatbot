@@ -29,5 +29,21 @@ services:
       # - SHERPA_URL_TOKENS=https://.../tokens.txt
     volumes:
       - ./models/sherpa:/models
+  py3-tts:
+    build:
+      context: .
+      dockerfile: docker/py3-tts/Dockerfile
+    image: maverick/py3-tts:local
+    container_name: py3-tts
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      - HTTP_PROXY=http://host.docker.internal:7890
+      - HTTPS_PROXY=http://host.docker.internal:7890
+      - NO_PROXY=localhost,127.0.0.1
+      - http_proxy=http://host.docker.internal:7890
+      - https_proxy=http://host.docker.internal:7890
+      - no_proxy=localhost,127.0.0.1
 
 

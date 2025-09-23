@@ -13,4 +13,10 @@ asr:
   vendor: sherpa-onnx
   sherpa:
     base-url: http://localhost:8081
-    endpoint: /v1/asr:transcribe
+    endpoint: /v1/asr-transcribe
+tts:
+  vendor: py3-tts
+  cosyvoice:
+    base-url: http://localhost:8082
+    endpoint: /v1/tts-synthesize
+  default-voice: zh

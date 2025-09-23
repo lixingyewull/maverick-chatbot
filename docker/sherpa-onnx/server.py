@@ -137,7 +137,7 @@ def init_recognizer():
 def on_startup():
     init_recognizer()
 
-@app.post("/v1/asr:transcribe")
+@app.post("/v1/asr-transcribe")
 async def transcribe(file: UploadFile = File(...)):
     if recognizer is None:
         raise HTTPException(status_code=500, detail="Recognizer 未初始化")

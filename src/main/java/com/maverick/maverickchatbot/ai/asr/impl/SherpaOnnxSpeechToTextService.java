@@ -30,7 +30,7 @@ public class SherpaOnnxSpeechToTextService implements SpeechToTextService {
     @Value("${asr.sherpa.base-url:http://localhost:8081}")
     private String sherpaBaseUrl;
 
-    @Value("${asr.sherpa.endpoint:/v1/asr:transcribe}")
+    @Value("${asr.sherpa.endpoint:/v1/asr-transcribe}")
     private String sherpaEndpoint;
 
     @Override
