@@ -4,9 +4,11 @@ const startBtn = document.getElementById('start');
 const stopBtn = document.getElementById('stop');
 const statusEl = document.getElementById('status');
 const player = document.getElementById('player');
-const output = document.getElementById('output');
-const rmsSlider = document.getElementById('rms');
-const rmsVal = document.getElementById('rmsVal');
+const rolesEl = document.getElementById('roles');
+const roleView = document.getElementById('roleView');
+const chatView = document.getElementById('chatView');
+const chatTitle = document.getElementById('chatTitle');
+const chatList = document.getElementById('chatList');
 
 let recorder;
 let ws;
@@ -16,6 +18,10 @@ let speaking = false; // 播放中标志（半双工）
 let silenceMs = 0;
 let hasVoiceSinceLastFlush = false;
 let rmsThreshold = 0.015;
+let selectedRoleId = null;
+let selectedRoleAvatar = null;
+let selectedRoleName = null;
+const rolesById = {};
 
 function setStatus(t){ statusEl.textContent = t; }
 
@@ -38,14 +44,64 @@ function detectAudioMime(ab) {
   return 'audio/wav';
 }
 
-function wireRmsUI() {
-  if (!rmsSlider || !rmsVal) return;
-  rmsSlider.value = String(rmsThreshold);
-  rmsVal.textContent = Number(rmsSlider.value).toFixed(3);
-  rmsSlider.addEventListener('input', () => {
-    rmsThreshold = Number(rmsSlider.value);
-    rmsVal.textContent = rmsThreshold.toFixed(3);
-  });
+function createAvatar(avatarUrl, fallbackText) {
+  const box = document.createElement('div');
+  box.style.width = '32px';
+  box.style.height = '32px';
+  box.style.borderRadius = '16px';
+  box.style.overflow = 'hidden';
+  box.style.flex = '0 0 32px';
+  box.style.display = 'flex';
+  box.style.alignItems = 'center';
+  box.style.justifyContent = 'center';
+  box.style.background = '#eee';
+  if (avatarUrl) {
+    const img = document.createElement('img');
+    img.src = avatarUrl;
+    img.alt = 'avatar';
+    img.style.width = '100%';
+    img.style.height = '100%';
+    img.style.objectFit = 'cover';
+    box.appendChild(img);
+  } else if (fallbackText) {
+    const span = document.createElement('span');
+    span.textContent = fallbackText;
+    span.style.fontSize = '14px';
+    span.style.color = '#555';
+    box.appendChild(span);
+  }
+  return box;
+}
+
+function appendBubble(text, who, avatarUrl) {
+  const wrap = document.createElement('div');
+  wrap.style.display = 'flex';
+  wrap.style.margin = '6px 0';
+  wrap.style.justifyContent = who === 'me' ? 'flex-end' : 'flex-start';
+  wrap.style.gap = '8px';
+  const bubble = document.createElement('div');
+  bubble.style.maxWidth = '70%';
+  bubble.style.padding = '8px 10px';
+  bubble.style.borderRadius = '8px';
+  bubble.style.whiteSpace = 'pre-wrap';
+  bubble.style.wordBreak = 'break-word';
+  bubble.style.fontSize = '14px';
+  if (who === 'me') {
+    bubble.style.background = '#d2f1ff';
+  } else {
+    bubble.style.background = '#fff';
+  }
+  bubble.textContent = text;
+  const avatar = who === 'me' ? createAvatar(null, '我') : createAvatar(avatarUrl || selectedRoleAvatar, 'A');
+  if (who === 'me') {
+    wrap.appendChild(bubble);
+    wrap.appendChild(avatar);
+  } else {
+    wrap.appendChild(avatar);
+    wrap.appendChild(bubble);
+  }
+  chatList.appendChild(wrap);
+  chatList.scrollTop = chatList.scrollHeight;
 }
 
 async function startRecordingLoop() {
@@ -90,17 +146,30 @@ async function startRecordingLoop() {
 
 function connectWS() {
   const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
-  const wsUrl = `${wsProtocol}://localhost:8080/ws/voice`;
+  const qs = selectedRoleId ? `?roleId=${encodeURIComponent(selectedRoleId)}` : '';
+  const wsUrl = `${wsProtocol}://localhost:8080/ws/voice${qs}`;
   ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
   ws.onopen = async () => {
     setStatus('WS 已连接');
-    startBtn?.removeAttribute('disabled');
+    if (selectedRoleId) startBtn?.removeAttribute('disabled');
     stopBtn?.setAttribute('disabled', 'true');
   };
   ws.onmessage = async (evt) => {
     if (typeof evt.data === 'string') {
-      // 文本控制消息
+      // 文本控制消息，优先解析 JSON
+      try {
+        const data = JSON.parse(evt.data);
+        if (data && data.type === 'text') {
+          if (data.user) appendBubble(data.user, 'me', null);
+          if (data.ai) {
+            const aiAvatar = data.aiRoleId && rolesById[data.aiRoleId]
+              ? rolesById[data.aiRoleId].avatar
+              : selectedRoleAvatar;
+            appendBubble(data.ai, 'ai', aiAvatar);
+          }
+        }
+      } catch {}
       return;
     }
     // 半双工：收到音频先暂停采集
@@ -129,6 +198,78 @@ function connectWS() {
   ws.onerror = () => {
     setStatus('WS 错误');
   };
+}
+async function loadRoles() {
+  try {
+    const res = await fetch('/api/roles');
+    const roles = await res.json();
+    rolesEl.innerHTML = '';
+    const resolveAvatar = (p) => {
+      if (!p) return null;
+      if (p.startsWith('http://') || p.startsWith('https://')) return p;
+      if (p.startsWith('/')) return p; // 从 Vite public 提供
+      return '/' + p.replace(/^\/+/, '');
+    };
+    roles.forEach(r => {
+      rolesById[r.id] = r;
+      const card = document.createElement('div');
+      card.style.border = '1px solid #ccc';
+      card.style.padding = '8px';
+      card.style.cursor = 'pointer';
+      card.style.width = '140px';
+
+      const center = document.createElement('div');
+      center.style.textAlign = 'center';
+
+      const avatarBox = document.createElement('div');
+      avatarBox.style.width = '80px';
+      avatarBox.style.height = '80px';
+      avatarBox.style.borderRadius = '40px';
+      avatarBox.style.margin = '0 auto 6px';
+      avatarBox.style.overflow = 'hidden';
+      avatarBox.style.background = '#eee';
+      avatarBox.style.display = 'flex';
+      avatarBox.style.alignItems = 'center';
+      avatarBox.style.justifyContent = 'center';
+
+      const img = document.createElement('img');
+      img.src = resolveAvatar(r.avatar);
+      img.alt = r.name || 'avatar';
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.objectFit = 'cover';
+      img.onerror = () => {
+        img.style.display = 'none';
+        const span = document.createElement('span');
+        span.textContent = (r.name || 'A').slice(0, 1);
+        span.style.fontSize = '28px';
+        span.style.color = '#666';
+        avatarBox.appendChild(span);
+      };
+      avatarBox.appendChild(img);
+
+      const nameDiv = document.createElement('div');
+      nameDiv.textContent = r.name || '';
+
+      center.appendChild(avatarBox);
+      center.appendChild(nameDiv);
+      card.appendChild(center);
+
+      card.onclick = () => {
+        selectedRoleId = r.id;
+        selectedRoleAvatar = resolveAvatar(r.avatar) || null;
+        selectedRoleName = r.name || '';
+        chatTitle.textContent = `聊天 - ${r.name}`;
+        roleView.style.display = 'none';
+        chatView.style.display = '';
+        setStatus('正在连接...');
+        connectWS();
+      };
+      rolesEl.appendChild(card);
+    });
+  } catch (e) {
+    setStatus('加载角色失败: ' + e.message);
+  }
 }
 
 // 绑定按钮
@@ -164,7 +305,7 @@ stopBtn?.addEventListener('click', async () => {
 });
 
 // 页面加载即建立 WS 连接
-connectWS();
+loadRoles();
 wireRmsUI();
 
 

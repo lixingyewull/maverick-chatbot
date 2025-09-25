@@ -23,3 +23,7 @@ tts:
     base-url: http://localhost:8082
     endpoint: /v1/tts-synthesize
   default-voice: zh
+rag:
+  chroma:
+    base-url: http://localhost:8000
+    collection: maverick_docs

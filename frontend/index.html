@@ -6,19 +6,21 @@
     <title>前端 · 语音转文字演示</title>
   </head>
   <body>
-    <h2>语音转文字 + LLM</h2>
-    <button id="start">开始录音</button>
-    <button id="stop" disabled>停止并发送</button>
-    <div style="margin:8px 0;">
-      <label>
-        音量阈值:
-        <input id="rms" type="range" min="0" max="0.1" step="0.001" />
-        <span id="rmsVal"></span>
-      </label>
+    <div id="roleView">
+      <h2>选择角色</h2>
+      <div id="roles" style="display:flex;gap:12px;flex-wrap:wrap;"></div>
     </div>
-    <div id="status">空闲</div>
-    <audio id="player" controls></audio>
-    <pre id="output"></pre>
+
+    <div id="chatView" style="display:none;">
+      <h2 id="chatTitle">聊天</h2>
+      <div id="chatList" style="height:380px;overflow:auto;padding:8px;background:#f7f7f7;border:1px solid #eee;border-radius:6px;"></div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+        <button id="start" disabled>开始录音</button>
+        <button id="stop" disabled>停止并发送</button>
+        <span id="status">空闲</span>
+      </div>
+      <audio id="player" style="display:none;"></audio>
+    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
   </html>

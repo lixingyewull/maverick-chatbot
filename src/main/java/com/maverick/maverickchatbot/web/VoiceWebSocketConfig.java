@@ -16,7 +16,8 @@ public class VoiceWebSocketConfig implements WebSocketConfigurer {
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(voiceWebSocketHandler, "/ws/voice").setAllowedOrigins("*");
+        registry.addHandler(voiceWebSocketHandler, "/ws/voice").setAllowedOrigins("*")
+                .addInterceptors(new org.springframework.web.socket.server.support.HttpSessionHandshakeInterceptor());
     }
 }
 

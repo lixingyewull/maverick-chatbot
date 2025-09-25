@@ -1,5 +1,13 @@
-version: "3.9"
 services:
+  chroma:
+    image: ghcr.io/chroma-core/chroma:0.5.4
+    container_name: chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      - index_data:/index_data
+    env_file:
+      - .env
   sherpa-onnx-server:
     build:
       context: .
@@ -45,5 +53,6 @@ services:
       - http_proxy=http://host.docker.internal:7890
       - https_proxy=http://host.docker.internal:7890
       - no_proxy=localhost,127.0.0.1
-
-
+volumes:
+  index_data:
+    driver: local

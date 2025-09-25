@@ -26,7 +26,6 @@ public class AiCodeHelperServiceFactory {
         AiCodeHelperService aiCodeHelperService = AiServices.builder(AiCodeHelperService.class)
                 .chatModel(qwenChatModel)
                 .chatMemory(chatMemory)
-                .contentRetriever(contentRetriever) // RAG 检索增强生成
                 .build();
         return aiCodeHelperService;
     }
