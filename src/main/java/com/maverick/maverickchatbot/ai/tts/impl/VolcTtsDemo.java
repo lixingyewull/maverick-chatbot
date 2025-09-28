@@ -83,7 +83,7 @@ public class VolcTtsDemo implements TtsService {
         TtsRequest request = TtsRequest.builder()
             .app(TtsRequest.App.builder()
                 .appid(appId)
-                .cluster("volcano_icl")
+                .cluster("volcano_tts")
                 .build())
             .user(TtsRequest.User.builder()
                 .uid("uid")

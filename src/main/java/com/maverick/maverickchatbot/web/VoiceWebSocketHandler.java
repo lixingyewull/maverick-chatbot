@@ -85,12 +85,16 @@ public class VoiceWebSocketHandler extends AbstractWebSocketHandler {
             var result = conversationOrchestrator.handleTurn(asrText, role, lastQuery, topicSummary, memorySummary, lastEscalatedRoleId);
 
             if (hasText(result.getTransferText())) {
+                // 过渡文本：保持当前角色音色
                 sendTextJson(session, asrText, result.getTransferText(), null);
-                sendTts(session, result.getTransferText());
+                String currentRoleId = roleId;
+                sendTts(session, result.getTransferText(), currentRoleId);
             }
 
+            // 最终文本：若有跨角色，使用目标角色音色；否则用当前角色
             sendTextJson(session, asrText, result.getFinalText(), result.getAiRoleId());
-            sendTts(session, result.getFinalText());
+            String roleForAnswer = (result.getAiRoleId() != null && !result.getAiRoleId().isEmpty()) ? result.getAiRoleId() : roleId;
+            sendTts(session, result.getFinalText(), roleForAnswer);
 
             updateSessionContext(session, result);
 
@@ -184,6 +188,25 @@ public class VoiceWebSocketHandler extends AbstractWebSocketHandler {
             session.sendMessage(new BinaryMessage(audio));
         } else {
             log.warn("TTS synthesis returned empty audio for text: '{}'", text);
+        }
+    }
+
+    private void sendTts(WebSocketSession session, String text, String roleId) throws Exception {
+        String voice = null;
+        try {
+            RoleConfig rc = roleService.getById(roleId);
+            if (rc != null && rc.getVoiceSamples() != null && !rc.getVoiceSamples().isEmpty()) {
+                RoleConfig.VoiceSample first = rc.getVoiceSamples().get(0);
+                if (first != null && first.getSpkId() != null && !first.getSpkId().isEmpty()) {
+                    voice = first.getSpkId();
+                }
+            }
+        } catch (Exception ignored) {}
+
+        log.info("Starting TTS synthesis for text: '{}' with voice: '{}' (roleId={})", text, voice, roleId);
+        byte[] audio = ttsService.synthesize(text, voice);
+        if (audio != null && audio.length > 0) {
+            session.sendMessage(new BinaryMessage(audio));
         }
     }
 
