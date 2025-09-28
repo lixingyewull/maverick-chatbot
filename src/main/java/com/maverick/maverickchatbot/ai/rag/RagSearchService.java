@@ -24,13 +24,14 @@ public class RagSearchService {
     private EmbeddingStore<TextSegment> embeddingStore;
 
     public List<TextSegment> searchByRole(String query, String roleId, int maxResults, double minScore) {
-        Embedding q = qwenEmbeddingModel.embed(query).content();
+        Embedding q = qwenEmbeddingModel.embed(normalize(query)).content();
         EmbeddingSearchRequest req = EmbeddingSearchRequest.builder()
                 .queryEmbedding(q)
                 .maxResults(maxResults)
                 .minScore(minScore)
                 .build();
         var res = embeddingStore.search(req);
+
         List<TextSegment> out = new ArrayList<>();
         if (res == null || res.matches() == null) return out;
         for (EmbeddingMatch<TextSegment> m : res.matches()) {
@@ -48,7 +49,7 @@ public class RagSearchService {
      * 在全库中检索，返回最相关的 role_id（取第一条匹配中携带的 role_id）。
      */
     public String findBestRoleId(String query, int maxResults, double minScore) {
-        Embedding q = qwenEmbeddingModel.embed(query).content();
+        Embedding q = qwenEmbeddingModel.embed(normalize(query)).content();
         EmbeddingSearchRequest req = EmbeddingSearchRequest.builder()
                 .queryEmbedding(q)
                 .maxResults(maxResults)
@@ -63,6 +64,15 @@ public class RagSearchService {
             if (rid != null && !rid.isEmpty()) return rid;
         }
         return null;
+    }
+
+    private String normalize(String s) {
+        if (s == null) return "";
+        // 去除常见标点/空白，统一空格，降低噪音（不做小写化，中文无影响）
+        String t = s.replaceAll("[\\u3000\\s]+", " ")
+                .replaceAll("[。，“”,、！？!?,.；;:：()（）\\-]+", " ")
+                .trim();
+        return t.isEmpty() ? s : t;
     }
 }
 

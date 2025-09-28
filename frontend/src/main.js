@@ -1,4 +1,5 @@
 import { WavRecorder } from './wav-recorder.js';
+const USE_RTC = window.USE_RTC === true;
 
 const startBtn = document.getElementById('start');
 const stopBtn = document.getElementById('stop');
@@ -15,6 +16,7 @@ let ws;
 let chunkTimer;
 let vadTimer;
 let speaking = false; // 播放中标志（半双工）
+let audioQueue = [];   // 音频播放队列，保证顺序播放
 let silenceMs = 0;
 let hasVoiceSinceLastFlush = false;
 let rmsThreshold = 0.015;
@@ -22,6 +24,7 @@ let selectedRoleId = null;
 let selectedRoleAvatar = null;
 let selectedRoleName = null;
 const rolesById = {};
+let lastUserEchoed = null; // 记录已展示过的本轮用户文本，避免跨角色重复显示
 
 function setStatus(t){ statusEl.textContent = t; }
 
@@ -112,7 +115,7 @@ async function startRecordingLoop() {
   hasVoiceSinceLastFlush = false;
   // VAD: 简单 RMS 阈值
   const minVoiceMs = 150;     // 至少达到这段有声再认为有声
-  const minSilenceMs = 600;   // 静音超过该值触发切片
+  const minSilenceMs = 1000;   // 静音超过该值触发切片
   let voiceAccumMs = 0;
   recorder.onLevel = (rms, frameCount) => {
     // 播放中暂停采集
@@ -161,7 +164,10 @@ function connectWS() {
       try {
         const data = JSON.parse(evt.data);
         if (data && data.type === 'text') {
-          if (data.user) appendBubble(data.user, 'me', null);
+          if (data.user && data.user !== lastUserEchoed) {
+            appendBubble(data.user, 'me', null);
+            lastUserEchoed = data.user;
+          }
           if (data.ai) {
             const aiAvatar = data.aiRoleId && rolesById[data.aiRoleId]
               ? rolesById[data.aiRoleId].avatar
@@ -172,23 +178,11 @@ function connectWS() {
       } catch {}
       return;
     }
-    // 半双工：收到音频先暂停采集
-    speaking = true;
-    recorder?.pause();
+    // 半双工 + 队列：收到音频加入队列，按顺序播放
     const mime = detectAudioMime(evt.data);
     const blob = new Blob([evt.data], { type: mime });
-    const url = URL.createObjectURL(blob);
-    player.src = url;
-    try {
-      await player.play();
-      player.onended = () => {
-        speaking = false;
-        recorder?.resume();
-      };
-    } catch {
-      speaking = false;
-      recorder?.resume();
-    }
+    audioQueue.push(blob);
+    playNextIfIdle();
   };
   ws.onclose = () => {
     setStatus('WS 断开，重连中...');
@@ -198,6 +192,31 @@ function connectWS() {
   ws.onerror = () => {
     setStatus('WS 错误');
   };
+}
+function playNextIfIdle() {
+  if (speaking) return;
+  if (audioQueue.length === 0) return;
+  const blob = audioQueue.shift();
+  const url = URL.createObjectURL(blob);
+  speaking = true;
+  recorder?.pause();
+  player.src = url;
+  player.onended = () => {
+    speaking = false;
+    recorder?.resume();
+    // 播放下一段
+    playNextIfIdle();
+  };
+  player.onerror = () => {
+    speaking = false;
+    recorder?.resume();
+    playNextIfIdle();
+  };
+  player.play().catch(() => {
+    speaking = false;
+    recorder?.resume();
+    playNextIfIdle();
+  });
 }
 async function loadRoles() {
   try {
@@ -262,8 +281,14 @@ async function loadRoles() {
         chatTitle.textContent = `聊天 - ${r.name}`;
         roleView.style.display = 'none';
         chatView.style.display = '';
-        setStatus('正在连接...');
-        connectWS();
+        if (USE_RTC) {
+          setStatus('RTC 模式：点击“开始录音”后进房并发布音频');
+          startBtn?.removeAttribute('disabled');
+          stopBtn?.setAttribute('disabled', 'true');
+        } else {
+          setStatus('正在连接...');
+          connectWS();
+        }
       };
       rolesEl.appendChild(card);
     });
@@ -304,8 +329,10 @@ stopBtn?.addEventListener('click', async () => {
   }
 });
 
-// 页面加载即建立 WS 连接
+// 页面加载即建立 WS 连接（RTC 模式不使用 wireRmsUI）
 loadRoles();
-wireRmsUI();
+if (typeof window.wireRmsUI === 'function') {
+  window.wireRmsUI();
+}
 
 

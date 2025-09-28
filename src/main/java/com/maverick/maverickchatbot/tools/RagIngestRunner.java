@@ -11,12 +11,13 @@ import dev.langchain4j.store.embedding.chroma.ChromaEmbeddingStore;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
+import com.maverick.maverickchatbot.ai.roles.RoleConfig;
+import com.maverick.maverickchatbot.ai.roles.RoleService;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * 独立入库程序：遍历 docs/<roleId>/*.txt，切分，写入 Chroma（持久化）。
@@ -34,6 +35,7 @@ public class RagIngestRunner {
                 .run(args);
 
         EmbeddingModel embeddingModel = ctx.getBean(EmbeddingModel.class);
+        RoleService roleService = ctx.getBean(RoleService.class);
 
         String baseUrl = ctx.getEnvironment().getProperty("rag.chroma.base-url", "http://localhost:8000");
         String collection = ctx.getEnvironment().getProperty("rag.chroma.collection", "maverick_docs");
@@ -42,6 +44,9 @@ public class RagIngestRunner {
                 .collectionName(collection)
                 .build();
 
+        long allStartNs = System.nanoTime();
+        System.out.println("[Ingest] Start. collection=" + collection + ", baseUrl=" + baseUrl);
+
         Path root = Paths.get("src/main/resources/docs");
         if (!Files.exists(root) || !Files.isDirectory(root)) {
             System.out.println("Docs directory not found: " + root);
@@ -49,10 +54,23 @@ public class RagIngestRunner {
             return;
         }
 
-        for (Path roleDir : Files.list(root).filter(Files::isDirectory).collect(Collectors.toList())) {
-            String roleId = roleDir.getFileName().toString();
+        // 遍历 roles.yaml：对每个角色按 docsDir（缺省回退 id）导入，role_id 使用角色 id
+        for (RoleConfig role : roleService.listRoles()) {
+            String roleId = role.getId();
+            String dirName = (role.getDocsDir() != null && !role.getDocsDir().isEmpty()) ? role.getDocsDir() : roleId;
+            Path roleDir = root.resolve(dirName);
+            if (!Files.exists(roleDir) || !Files.isDirectory(roleDir)) {
+                System.out.println("Skip role (docs dir not found): role=" + roleId + ", dir=" + roleDir);
+                continue;
+            }
+
             List<Document> documents = FileSystemDocumentLoader.loadDocuments(roleDir.toString());
-            if (documents == null || documents.isEmpty()) continue;
+            if (documents == null || documents.isEmpty()) {
+                System.out.println("Empty docs, skip: role=" + roleId + ", dir=" + dirName);
+                continue;
+            }
+            System.out.println("[Ingest] Role=" + roleId + ", dir=" + dirName + ", files=" + documents.size());
+            long roleStartNs = System.nanoTime();
 
             DocumentByParagraphSplitter splitter = new DocumentByParagraphSplitter(1000, 200);
             EmbeddingStoreIngestor ingestor = EmbeddingStoreIngestor.builder()
@@ -67,9 +85,25 @@ public class RagIngestRunner {
                     .embeddingModel(embeddingModel)
                     .embeddingStore(store)
                     .build();
-            ingestor.ingest(documents);
-            System.out.println("Ingested role: " + roleId + ", files: " + documents.size());
+            // 逐文件入库并打印进度
+            int total = documents.size();
+            for (int i = 0; i < total; i++) {
+                Document doc = documents.get(i);
+                String fileName = null;
+                try { fileName = doc.metadata() != null ? doc.metadata().getString("file_name") : null; } catch (Exception ignore) {}
+                int charLen = doc.text() != null ? doc.text().length() : -1;
+                System.out.println("[Ingest] (" + (i + 1) + "/" + total + ") start: role=" + roleId + ", file=" + (fileName == null ? "<unknown>" : fileName) + ", chars=" + charLen);
+                long fileStartNs = System.nanoTime();
+                ingestor.ingest(doc);
+                long fileElapsedMs = (System.nanoTime() - fileStartNs) / 1_000_000;
+                System.out.println("[Ingest] (" + (i + 1) + "/" + total + ") done : role=" + roleId + ", file=" + (fileName == null ? "<unknown>" : fileName) + ", timeMs=" + fileElapsedMs);
+            }
+            long roleElapsedMs = (System.nanoTime() - roleStartNs) / 1_000_000;
+            System.out.println("[Ingest] Role done: role=" + roleId + ", files=" + documents.size() + ", timeMs=" + roleElapsedMs);
         }
+
+        long allElapsedMs = (System.nanoTime() - allStartNs) / 1_000_000;
+        System.out.println("[Ingest] All done. collection=" + collection + ", timeMs=" + allElapsedMs);
 
         ctx.close();
         System.out.println("RAG ingest completed. Collection: " + collection);

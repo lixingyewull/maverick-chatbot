@@ -8,21 +8,24 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class RoleService {
 
-    private final Map<String, RoleConfig> cache = new ConcurrentHashMap<>();
+    // 使用 LinkedHashMap 保持插入顺序（即 YAML 中的顺序）
+    private final Map<String, RoleConfig> cache = new LinkedHashMap<>();
 
     public List<RoleConfig> listRoles() {
         ensureLoaded();
-        return cache.values().stream().toList();
+        // 按插入顺序返回副本，避免外部修改
+        return new ArrayList<>(cache.values());
     }
 
     public RoleConfig getById(String id) {

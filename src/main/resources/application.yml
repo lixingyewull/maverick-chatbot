@@ -18,11 +18,16 @@ asr:
     base-url: http://localhost:8081
     endpoint: /v1/asr-transcribe
 tts:
-  vendor: py3-tts
-  cosyvoice:
-    base-url: http://localhost:8082
-    endpoint: /v1/tts-synthesize
-  default-voice: zh
+  vendor: volc-demo
+  volc:
+    ws-url: wss://openspeech.bytedance.com/api/v1/tts/ws_binary
+    api-url: https://openspeech.bytedance.com/tts
+    app-id: 9838143164
+    access-token: 
+    sk: 
+    voice-id: 
+    format: mp3
+    auth-header-prefix: "Bearer "
 rag:
   chroma:
     base-url: http://localhost:8000

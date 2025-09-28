@@ -12,6 +12,15 @@ public interface TtsService {
      * @return 音频字节
      */
     byte[] synthesize(String text, String voice);
+
+    /**
+     * 流式合成：文本一次性送入，服务端分片返回音频。
+     * 默认实现：调用 {@link #synthesize(String, String)} 并一次性回传。
+     */
+    default void synthesizeStream(String text, String voice, java.util.function.Consumer<byte[]> onChunk) throws Exception {
+        byte[] all = synthesize(text, voice);
+        if (all != null && all.length > 0) onChunk.accept(all);
+    }
 }
 
 

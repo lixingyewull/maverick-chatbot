@@ -1,12 +1,12 @@
 package com.maverick.maverickchatbot.web;
 
-import com.maverick.maverickchatbot.ai.AiCodeHelperService;
 import com.maverick.maverickchatbot.ai.asr.SpeechToTextService;
 import com.maverick.maverickchatbot.ai.tts.TtsService;
+import com.maverick.maverickchatbot.ai.rag.ConversationOrchestrator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.lang.NonNull;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -14,56 +14,28 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.AbstractWebSocketHandler;
 import org.springframework.web.multipart.MultipartFile;
 import java.nio.ByteBuffer;
-import dev.langchain4j.service.Result;
-import dev.langchain4j.rag.content.Content;
-import dev.langchain4j.data.segment.TextSegment;
-import java.util.List;
 import com.maverick.maverickchatbot.ai.roles.RoleService;
 import com.maverick.maverickchatbot.ai.roles.RoleConfig;
-import com.maverick.maverickchatbot.ai.rag.RagSearchService;
 
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class VoiceWebSocketHandler extends AbstractWebSocketHandler {
 
-    private final AiCodeHelperService aiCodeHelperService;
     private final SpeechToTextService speechToTextService;
     private final TtsService ttsService;
     private final RoleService roleService;
-    private final RagSearchService ragSearchService;
+    private final ConversationOrchestrator conversationOrchestrator;
 
     @Override
-    public void afterConnectionEstablished(WebSocketSession session) {
+    public void afterConnectionEstablished(@NonNull WebSocketSession session) {
         log.info("/ws/voice connected: {}", session.getId());
     }
 
-    private static String toJsonString(String s) {
-        if (s == null) return "null";
-        StringBuilder sb = new StringBuilder();
-        sb.append('"');
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"': sb.append("\\\""); break;
-                case '\\': sb.append("\\\\"); break;
-                case '\n': sb.append("\\n"); break;
-                case '\r': sb.append("\\r"); break;
-                case '\t': sb.append("\\t"); break;
-                default:
-                    if (c < 0x20) {
-                        sb.append(String.format("\\u%04x", (int)c));
-                    } else {
-                        sb.append(c);
-                    }
-            }
-        }
-        sb.append('"');
-        return sb.toString();
-    }
+    private static String toJsonString(String s) { return JsonUtil.toJsonString(s); }
 
     @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+    protected void handleTextMessage(@NonNull WebSocketSession session, @NonNull TextMessage message) throws Exception {
         // 简单协议：收到 "ping" 回复 "pong"
         String payload = message.getPayload();
         if ("ping".equalsIgnoreCase(payload)) {
@@ -72,122 +44,55 @@ public class VoiceWebSocketHandler extends AbstractWebSocketHandler {
     }
 
     @Override
-    protected void handleBinaryMessage(WebSocketSession session, BinaryMessage message) throws Exception {
+    protected void handleBinaryMessage(@NonNull WebSocketSession session, @NonNull BinaryMessage message) throws Exception {
         // 收到整段音频（二进制 WAV/AIFF 等），执行 ASR→LLM→TTS，返回音频（MP3 或 WAV）
         try {
-            ByteBuffer payload = message.getPayload();
-            byte[] audioBytes = new byte[payload.remaining()];
-            payload.get(audioBytes);
-            MultipartFile file = new ByteArrayMultipartFile("file", "client.wav", "audio/wav", audioBytes);
-            String asrText = speechToTextService.transcribe(file);
+            byte[] audioBytes = extractAudioBytes(message);
+            MultipartFile file = toMultipart(audioBytes);
+            String asrText = transcribe(file); // ASR
             log.info("用户语音输入：{}", asrText);
-            String roleId = null;
-            // 从ws的url获取角色id
-            var params = session.getUri().getQuery();
-            if (params != null) {
-                for (String p : params.split("&")) {
-                    String[] kv = p.split("=", 2);
-                    if (kv.length == 2 && "roleId".equals(kv[0])) { roleId = java.net.URLDecoder.decode(kv[1], java.nio.charset.StandardCharsets.UTF_8); }
-                }
+
+            // 过滤纯标点/空白或口头禅等噪声，避免发送无意义文本
+            if (isNoisyText(asrText)) {
+                log.info("忽略噪声/无效 ASR：{}", asrText);
+                return;
             }
-            RoleConfig role = roleService.getById(roleId);
-            // 读取/维护会话上下文：lastQuery、topicSummary（不持久化跨角色）
-            var attrs = session.getAttributes();
-            String lastQuery = attrs != null ? (String) attrs.get("lastQuery") : null;
-            String topicSummary = attrs != null ? (String) attrs.get("topicSummary") : null;
 
-            // 本轮检索仅使用 URL 角色；不将跨角色结果持久化到会话
-            String roleIdForSearch = role.getId();
-
-            // 构造检索用 ragQuery：短句时拼接上文（lastQuery / topicSummary）
-            String userQuery = asrText != null ? asrText.trim() : "";
-            String ragQuery = userQuery;
+            // 简易去重：相同 ASR 在短时间内（2s）不重复处理
             try {
-                int codePoints = userQuery.codePointCount(0, userQuery.length());
-                if (codePoints < 4) {
-                    String ctx = (topicSummary != null && !topicSummary.isEmpty()) ? topicSummary
-                            : (lastQuery != null ? lastQuery : "");
-                    ragQuery = ctx.isEmpty() ? userQuery : (ctx + " " + userQuery);
-                }
-            } catch (Exception ignored) {}
-
-            // 使用带元数据过滤的检索服务先取片段，拼接上下文后再走 LLM
-            var segs = ragSearchService.searchByRole(ragQuery, roleIdForSearch, 5, 0.65);
-            // 打印
-            log.info("RAG search with role={} query='{}' segs count: {}", roleIdForSearch, ragQuery, (segs == null ? 0 : segs.size()));
-            //打印结束
-            // 如果当前角色的向量库中没搜到，找其他角色回答
-            if (segs == null || segs.isEmpty()) {
-                String bestRoleId = ragSearchService.findBestRoleId(asrText, 3, 0.75); // 找到最匹配的角色id
-                if (bestRoleId == null) { // 无任何命中：让模型判断是寒暄还是需要知识
-                    String stylePrefix = role.getPersonaPrompt() != null ? role.getPersonaPrompt() + "\n\n" : "";
-                    String decidePrompt = stylePrefix +
-                            "用户说：" + asrText + "\n" +
-                            "请用当前角色口吻直接给出最终回复（最多2句）：\n" +
-                            "- 若是寒暄/闲聊/不依赖外部知识的问题，请自然简短回应；\n" +
-                            "- 若涉及事实/历史/专业且无可靠资料，请直接说‘我不清楚。’，不要编造，也不要解释理由。";
-                    String aiText = aiCodeHelperService.chat(decidePrompt);
-
-                    String json = "{\"type\":\"text\",\"user\":" + toJsonString(asrText) + ",\"ai\":" + toJsonString(aiText) + "}";
-                    session.sendMessage(new TextMessage(json));
-                    byte[] tts = ttsService.synthesize(aiText,"zh-CN-XiaoxiaoNeural");
-                    session.sendMessage(new BinaryMessage(tts));
+                var attrs = session.getAttributes();
+                String lastProcessed = attrs != null ? (String) attrs.get("lastProcessedText") : null;
+                Long lastAt = attrs != null ? (Long) attrs.get("lastProcessedAt") : null;
+                long now = System.currentTimeMillis();
+                if (asrText != null && !asrText.isEmpty() && lastProcessed != null && asrText.equals(lastProcessed) && lastAt != null && (now - lastAt) < 2000) {
+                    log.info("忽略重复 ASR（2s 内相同文本）：{}", asrText);
                     return;
                 }
-                segs = ragSearchService.searchByRole(asrText, bestRoleId, 3, 0.75); // 用最符合的角色再检索一次
-                // 打印二次检索命中情况
-                try {
-                    log.info("Fallback role {} segs count: {}", bestRoleId, (segs == null ? 0 : segs.size()));
-                    if (segs != null) {
-                        int j = 0;
-                        for (TextSegment seg2 : segs) {
-                            if (j >= 3) break;
-                            String rid2 = seg2.metadata() != null ? seg2.metadata().getString("role_id") : null;
-                            String txt2 = seg2.text();
-                            if (txt2 != null && txt2.length() > 200) txt2 = txt2.substring(0, 200);
-                            log.info("fallback seg[{}] role_id={} text={}", j, rid2, txt2);
-                            j++;
-                        }
-                    }
-                } catch (Exception ignore) {}
-                // 先由“当前角色”以其口吻生成一句过渡话
-                String bestRoleName = roleService.getById(bestRoleId).getName();
-                String stylePrefix = (role != null && role.getPersonaPrompt() != null) ? role.getPersonaPrompt() + "\n\n" : "";
-                String transferPrompt = stylePrefix + "请用当前角色的口吻，简洁用中文说一句话：你不清楚该问题，但" + bestRoleName + " 更了解，你将请 TA 来回答。只输出这句话，勿添加多余解释。";
-                String transferText = aiCodeHelperService.chat(transferPrompt);
-
-                // 文本/语音提示仍以“当前角色”身份说出（不切换头像）
-                String json = "{\"type\":\"text\",\"user\":" + toJsonString(asrText) + ",\"ai\":" + toJsonString(transferText) + "}";
-                session.sendMessage(new TextMessage(json));
-                byte[] tts = ttsService.synthesize(transferText,"zh-CN-XiaoxiaoNeural");
-                session.sendMessage(new BinaryMessage(tts));
-                roleIdForSearch = bestRoleId; // 仅本轮切换回答角色，不做会话持久化
-            }
-
-            StringBuilder ctx = new StringBuilder();
-            for (int i = 0; i < segs.size(); i++) {
-                ctx.append("[片段 ").append(i + 1).append("]\n").append(segs.get(i).text()).append("\n\n");
-            }
-            String prompt = ctx.append("问题：").append(asrText).toString();
-            String aiText = aiCodeHelperService.chat(prompt);
-            log.info("AI 输出：{}", aiText);
-
-            // 先发送文本 JSON 供前端显示聊天气泡
-            String json = "{\"type\":\"text\",\"user\":" + toJsonString(asrText) + ",\"ai\":" + toJsonString(aiText) + (roleIdForSearch!=null? ",\"aiRoleId\":"+toJsonString(roleIdForSearch):"") + "}";
-            session.sendMessage(new TextMessage(json));
-            byte[] tts = ttsService.synthesize(aiText,"zh-CN-XiaoxiaoNeural");
-            session.sendMessage(new BinaryMessage(tts));
-
-            // 更新 lastQuery / topicSummary（简易规则：lastQuery=本次问句；topicSummary 先复用最近2句）
-            try {
                 if (attrs != null) {
-                    attrs.put("lastQuery", userQuery);
-                    // 简易 topicSummary：若存在旧摘要则保留，否则用本次问句；可替换为模型摘要
-                    if (topicSummary == null || topicSummary.isEmpty()) {
-                        attrs.put("topicSummary", userQuery);
-                    }
+                    attrs.put("lastProcessedText", asrText);
+                    attrs.put("lastProcessedAt", now);
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception ignore) {}
+
+            String roleId = extractRoleIdFromQuery(session);
+            RoleConfig role = roleService.getById(roleId);
+
+            String lastQuery = getSessionAttr(session, "lastQuery");
+            String topicSummary = getSessionAttr(session, "topicSummary");
+            String memorySummary = getSessionAttr(session, "memorySummary");
+            String lastEscalatedRoleId = getSessionAttr(session, "lastEscalatedRoleId");
+
+            var result = conversationOrchestrator.handleTurn(asrText, role, lastQuery, topicSummary, memorySummary, lastEscalatedRoleId);
+
+            if (hasText(result.getTransferText())) {
+                sendTextJson(session, asrText, result.getTransferText(), null);
+                sendTts(session, result.getTransferText());
+            }
+
+            sendTextJson(session, asrText, result.getFinalText(), result.getAiRoleId());
+            sendTts(session, result.getFinalText());
+
+            updateSessionContext(session, result);
 
         } catch (Exception e) {
             log.error("WS handleBinaryMessage failed", e);
@@ -196,8 +101,116 @@ public class VoiceWebSocketHandler extends AbstractWebSocketHandler {
         }
     }
 
+    // ======== Private helpers (inside handler class) ========
+    private byte[] extractAudioBytes(BinaryMessage message) {
+        ByteBuffer payload = message.getPayload();
+        byte[] audioBytes = new byte[payload.remaining()];
+        payload.get(audioBytes);
+        return audioBytes;
+    }
+
+    private MultipartFile toMultipart(byte[] audioBytes) {
+        return new ByteArrayMultipartFile("file", "client.wav", "audio/wav", audioBytes);
+    }
+
+    private String transcribe(MultipartFile file) throws Exception {
+        return speechToTextService.transcribe(file);
+    }
+
+    private String extractRoleIdFromQuery(WebSocketSession session) {
+        try {
+            var uri = session.getUri();
+            if (uri == null) return null;
+            String params = uri.getQuery();
+            if (params == null) return null;
+            for (String p : params.split("&")) {
+                String[] kv = p.split("=", 2);
+                if (kv.length == 2 && "roleId".equals(kv[0])) {
+                    return java.net.URLDecoder.decode(kv[1], java.nio.charset.StandardCharsets.UTF_8);
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private String getSessionAttr(WebSocketSession session, String key) {
+        try {
+            var attrs = session.getAttributes();
+            return attrs != null ? (String) attrs.get(key) : null;
+        } catch (Exception e) { return null; }
+    }
+
+    private void updateSessionContext(WebSocketSession session, com.maverick.maverickchatbot.ai.rag.ConversationOrchestrator.Result result) {
+        try {
+            var attrs = session.getAttributes();
+            if (attrs != null) {
+                attrs.put("lastQuery", result.getNewLastQuery());
+                // 取消对 topicSummary 的维护
+                if (result.getNewMemorySummary() != null && !result.getNewMemorySummary().isEmpty()) {
+                    attrs.put("memorySummary", result.getNewMemorySummary());
+                }
+                if (result.getNewEscalatedRoleId() != null) {
+                    attrs.put("lastEscalatedRoleId", result.getNewEscalatedRoleId());
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void sendTextJson(WebSocketSession session, String userText, String aiText, String aiRoleId) throws Exception {
+        String json = "{\"type\":\"text\",\"user\":" + toJsonString(userText) + ",\"ai\":" + toJsonString(aiText) +
+                (aiRoleId != null ? ",\"aiRoleId\":" + toJsonString(aiRoleId) : "") + "}";
+        session.sendMessage(new TextMessage(json));
+    }
+
+    private void sendTts(WebSocketSession session, String text) throws Exception {
+        String roleId = extractRoleIdFromQuery(session);
+        String voice = null;
+        try {
+            RoleConfig rc = roleService.getById(roleId);
+            if (rc != null && rc.getVoiceSamples() != null && !rc.getVoiceSamples().isEmpty()) {
+                RoleConfig.VoiceSample first = rc.getVoiceSamples().get(0);
+                if (first != null && first.getSpkId() != null && !first.getSpkId().isEmpty()) {
+                    voice = first.getSpkId();
+                }
+            }
+            // 若当前角色未配置 voiceSamples，则由 TtsService 内部回退到全局默认 voice-type
+        } catch (Exception ignored) {}
+        
+        // 使用一次性合成，获取完整音频后发送给前端
+        log.info("Starting TTS synthesis for text: '{}' with voice: '{}'", text, voice);
+        byte[] audio = ttsService.synthesize(text, voice);
+        if (audio != null && audio.length > 0) {
+            log.info("TTS synthesis completed, sending audio ({} bytes) to frontend", audio.length);
+            session.sendMessage(new BinaryMessage(audio));
+        } else {
+            log.warn("TTS synthesis returned empty audio for text: '{}'", text);
+        }
+    }
+
+    private boolean hasText(String s) {
+        return s != null && !s.isEmpty();
+    }
+
+    // 判断是否为噪声或无效文本：纯标点/空白、或常见口头禅且过短
+    private boolean isNoisyText(String s) {
+        if (s == null) return true;
+        String t = s.trim();
+        if (t.isEmpty()) return true;
+        // 去掉标点和空白后是否为空
+        String noPunc = t.replaceAll("[\\p{P}‘’“”\u3000\s]+", "");
+        if (noPunc.isEmpty()) return true;
+        // 简单口头禅过滤：短且只包含以下词
+        if (t.length() <= 2) {
+            String[] fillers = {"啊","哦","呃","额","哈","嘿","呀","哎"};
+            for (String f : fillers) {
+                if (t.equals(f) || t.startsWith(f)) return true;
+            }
+        }
+        return false;
+    }
+
     @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+    public void afterConnectionClosed(@NonNull WebSocketSession session, @NonNull CloseStatus status) {
         log.info("/ws/voice closed: {} {}", session.getId(), status);
     }
 }
@@ -216,7 +229,7 @@ class ByteArrayMultipartFile implements MultipartFile {
     }
 
     @Override
-    public String getName() { return name; }
+    public @NonNull String getName() { return name; }
 
     @Override
     public String getOriginalFilename() { return originalFilename; }
@@ -231,13 +244,13 @@ class ByteArrayMultipartFile implements MultipartFile {
     public long getSize() { return content.length; }
 
     @Override
-    public byte[] getBytes() { return content; }
+    public @NonNull byte[] getBytes() { return content; }
 
     @Override
-    public java.io.InputStream getInputStream() { return new java.io.ByteArrayInputStream(content); }
+    public @NonNull java.io.InputStream getInputStream() { return new java.io.ByteArrayInputStream(content); }
 
     @Override
-    public void transferTo(java.io.File dest) throws java.io.IOException, java.lang.IllegalStateException {
+    public void transferTo(@NonNull java.io.File dest) throws java.io.IOException, java.lang.IllegalStateException {
         try (java.io.FileOutputStream fos = new java.io.FileOutputStream(dest)) {
             fos.write(content);
         }
